@@ -42,6 +42,7 @@ class DR2PPeer(DR2PBase):
         self.next_rid = 1  # Request-response id.
         self.callback_dict = {}  # rid -> callback
         self.client_id = None  # ?
+        self.remote_host = None
 
     def set_handler(self, path, handler=None):
         self.handler_dict[path] = Handler if handler is None else handler
@@ -50,10 +51,11 @@ class DR2PPeer(DR2PBase):
         rid = str(self.next_rid)
         self.next_rid += 1
         head = {
-            'type': 'request',
-            'path': path,
-            'id': rid,
-            'version': '0'
+            'Type': 'request',
+            'Host': self.remote_host,
+            'Path': path,
+            'ID': rid,
+            'Version': '0'
         }
         body = json.dumps(msg).encode(encoding='utf-8')
         _log('Send request head {}'.format(head))
@@ -81,10 +83,10 @@ class DR2PPeer(DR2PBase):
     def mainloop(self):
 
         def routine(head, body):
-            if head['type'] == 'request':
+            if head['Type'] == 'request':
                 _log('Receive request head {}'.format(head))
-                path = head['path']
-                rid = head['id']
+                path = head['Path']
+                rid = head['ID']
                 msg = json.loads(body.decode(encoding='utf-8'))  # JSON
                 _log('Receive request body {}'.format(msg))
                 _log('Calling handler...')
@@ -95,20 +97,20 @@ class DR2PPeer(DR2PBase):
                 res = handler.handle(msg)
                 _log('Handler returned.')
                 res_head = {
-                    'type': 'response',
-                    'code': 'OK',
-                    'id': rid,
-                    'version': '0'
+                    'Type': 'response',
+                    'Code': 'OK',
+                    'ID': rid,
+                    'Version': '0'
                 }
                 res_body = json.dumps(res).encode(encoding='utf-8')  # JSON
                 _log('Send response head {}'.format(res_head))
                 _log('Send response body {}'.format(res))
                 self.j.send(res_head, res_body)
-            elif head['type'] == 'response':
+            elif head['Type'] == 'response':
                 _log('Receive response head {}'.format(head))
                 msg = json.loads(body.decode(encoding='utf8'))
                 _log('Receive response body {}'.format(msg))
-                rid = head['id']
+                rid = head['ID']
                 callback = self.callback_dict[rid]
                 callback.dr2p_peer = self  # ?
                 callback(
@@ -140,7 +142,7 @@ class DR2PServer(DR2PBase):
         self.next_cid = 1
 
     def set_handler(self, path, handler=None):
-        self.handler_dict[path] = Handler() if handler is None else handler
+        self.handler_dict[path] = Handler if handler is None else handler
 
     def request(self, client_id, path, msg):
         dr2p_peer = self.client_dict[client_id]
@@ -153,6 +155,7 @@ class DR2PServer(DR2PBase):
             dr2p_peer = DR2PPeer(jhtp_peer, self.handler_dict)
             client_id = str(self.next_cid)
             self.next_cid += 1
+            dr2p_peer.remote_host = client_id
             self.client_dict[client_id] = dr2p_peer
             _thread.start_new_thread(dr2p_peer.mainloop, ())
 
@@ -167,6 +170,7 @@ class DR2PClient(DR2PPeer):
 
     def connect(self, host, port):
         self.j.connect(host, port)
+        self.remote_host = host
 
 
 class Handler:
