@@ -18,6 +18,28 @@ def _log(text, level=1):
         print(text)
 
 
+def encode_msg(msg, body_type=None):
+    body_type = 'text/json' if body_type is None else body_type
+    if body_type == 'text/json':
+        body = json.dumps(msg).encode(encoding='utf-8')
+    elif body_type == 'bytes/raw':
+        body = msg
+    else:
+        body = msg
+    return body, body_type
+
+
+def decode_msg(body, body_type=None):
+    body_type = 'bytes/raw' if body_type is None else body_type
+    if body_type == 'text/json':
+        msg = json.loads(body.decode(encoding='utf-8'))
+    elif body_type == 'bytes/raw':
+        msg = body
+    else:
+        msg = body
+    return msg, body_type
+
+
 class DR2PBase:
 
     def __init__(self, j=None):
@@ -47,7 +69,7 @@ class DR2PPeer(DR2PBase):
     def set_handler(self, path, handler=None):
         self.handler_dict[path] = Handler if handler is None else handler
 
-    def _request_callback(self, path, msg, callback):  # Callback
+    def _request_callback(self, path, msg, callback, body_type=None):  # Callback
         rid = str(self.next_rid)
         self.next_rid += 1
         head = {
@@ -57,13 +79,14 @@ class DR2PPeer(DR2PBase):
             'ID': rid,
             'Version': '0'
         }
-        body = json.dumps(msg).encode(encoding='utf-8')
+        body, body_type = encode_msg(msg, body_type)
+        head['Body_Type'] = body_type
         _log('Send request head {}'.format(head))
         _log('Send request body {}'.format(msg))
         self.j.send(head, body)
         self.callback_dict[rid] = callback
 
-    def request(self, path, msg):
+    def request(self, path, msg, body_type=None):
         lock = _thread.allocate_lock()
         lock.acquire()
         namespace = {}
@@ -72,7 +95,7 @@ class DR2PPeer(DR2PBase):
             namespace['kv'] = kv
             lock.release()
 
-        self._request_callback(path, msg, callback)
+        self._request_callback(path, msg, callback, body_type=body_type)
         lock.acquire()
         lock.release()
         return namespace['kv']
@@ -87,28 +110,30 @@ class DR2PPeer(DR2PBase):
                 _log('Receive request head {}'.format(head))
                 path = head['Path']
                 rid = head['ID']
-                msg = json.loads(body.decode(encoding='utf-8'))  # JSON
+                msg, _ = decode_msg(body, body_type=head['Body_Type'] if 'Body_Type' in head else None)
                 _log('Receive request body {}'.format(msg))
                 _log('Calling handler...')
                 handler = self.handler_dict[path]()
                 handler.dr2p_peer = self
                 handler.head = head
                 handler.body = body
-                res = handler.handle(msg)
-                _log('Handler returned.')
-                res_head = {
+                handler.res_head = {
                     'Type': 'response',
                     'Code': 'OK',
                     'ID': rid,
                     'Version': '0'
                 }
-                res_body = json.dumps(res).encode(encoding='utf-8')  # JSON
-                _log('Send response head {}'.format(res_head))
+                res = handler.handle(msg)
+                _log('Handler returned.')
+                body_type = handler.res_head['Body_Type'] if 'Body_Type' in handler.res_head else None
+                res_body, body_type = encode_msg(res, body_type=body_type)
+                handler.res_head['Body_Type'] = body_type
+                _log('Send response head {}'.format(handler.res_head))
                 _log('Send response body {}'.format(res))
-                self.j.send(res_head, res_body)
+                self.j.send(handler.res_head, res_body)
             elif head['Type'] == 'response':
                 _log('Receive response head {}'.format(head))
-                msg = json.loads(body.decode(encoding='utf8'))
+                msg, _ = decode_msg(body, body_type=head['Body_Type'] if 'Body_Type' in head else None)
                 _log('Receive response body {}'.format(msg))
                 rid = head['ID']
                 callback = self.callback_dict[rid]
@@ -180,6 +205,10 @@ class Handler:
         self.dr2p_peer = None
         self.head = None
         self.body = None
+        self.res_head = None
+
+    def set_header_body_type(self, body_type):
+        self.res_head['Body_Type'] = body_type
 
     def handle(self, msg):
         pass
