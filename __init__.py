@@ -160,6 +160,7 @@ class DR2PServer(DR2PBase):
             _thread.start_new_thread(dr2p_peer.mainloop, ())
 
         self.j.on_accept = on_accept
+        _log('Server mainloop start.')
         self.j.mainloop()
 
 
