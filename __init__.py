@@ -40,6 +40,11 @@ def decode_msg(body, body_type=None):
     return msg, body_type
 
 
+def update_cookie(cookie, set_cookie):
+    for co in set_cookie:
+        cookie[co['Key']] = co['Value']
+
+
 class DR2PBase:
 
     def __init__(self, j=None):
@@ -65,6 +70,7 @@ class DR2PPeer(DR2PBase):
         self.callback_dict = {}  # rid -> callback
         self.client_id = None  # ?
         self.remote_host = None
+        self.cookie = {}
 
     def set_handler(self, path, handler=None):
         self.handler_dict[path] = Handler if handler is None else handler
@@ -81,6 +87,8 @@ class DR2PPeer(DR2PBase):
         }
         body, body_type = encode_msg(msg, body_type)
         head['Body_Type'] = body_type
+        if not self.cookie == {}:
+            head['Cookie'] = self.cookie
         _log('Send request head {}'.format(head))
         _log('Send request body {}'.format(msg))
         self.j.send(head, body)
@@ -136,6 +144,8 @@ class DR2PPeer(DR2PBase):
                 msg, _ = decode_msg(body, body_type=head['Body_Type'] if 'Body_Type' in head else None)
                 _log('Receive response body {}'.format(msg))
                 rid = head['ID']
+                if 'Set_Cookie' in head:
+                    update_cookie(self.cookie, head['Set_Cookie'])
                 callback = self.callback_dict[rid]
                 callback.dr2p_peer = self  # ?
                 callback(
@@ -209,6 +219,18 @@ class Handler:
 
     def set_header_body_type(self, body_type):
         self.res_head['Body_Type'] = body_type
+
+    def get_cookie(self, key):
+        cookie = self.head['Cookie'] if 'Cookie' in self.head else {}
+        return cookie[key] if key in cookie else None
+
+    def set_cookie(self, key, value):
+        if 'Set_Cookie' not in self.res_head:
+            self.res_head['Set_Cookie'] = []
+        self.res_head['Set_Cookie'].append({
+            'Key': key,
+            'Value': value
+        })
 
     def handle(self, msg):
         pass
