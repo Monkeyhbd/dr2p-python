@@ -75,7 +75,7 @@ class DR2PPeer(DR2PBase):
     def set_handler(self, path, handler=None):
         self.handler_dict[path] = Handler if handler is None else handler
 
-    def _request_callback(self, path, msg, callback, body_type=None):  # Callback
+    def _request_callback(self, path, msg, callback, body_type=None, no_response=False):  # Callback
         rid = str(self.next_rid)
         self.next_rid += 1
         head = {
@@ -87,14 +87,22 @@ class DR2PPeer(DR2PBase):
         }
         body, body_type = encode_msg(msg, body_type)
         head['Body_Type'] = body_type
+        # Cookie
         if not self.cookie == {}:
             head['Cookie'] = self.cookie
+        # No_Response
+        # Request peer don't respond. Don't register callback.
+        if no_response:
+            head['No_Response'] = True
+        else:
+            self.callback_dict[rid] = callback
         _log('Send request head {}'.format(head))
         _log('Send request body {}'.format(msg))
         self.j.send(head, body)
-        self.callback_dict[rid] = callback
+        if no_response:
+            callback(msg=None, head=None, body=None)
 
-    def request(self, path, msg, body_type=None):
+    def request(self, path, msg, body_type=None, no_response=False):
         lock = _thread.allocate_lock()
         lock.acquire()
         namespace = {}
@@ -103,7 +111,7 @@ class DR2PPeer(DR2PBase):
             namespace['kv'] = kv
             lock.release()
 
-        self._request_callback(path, msg, callback, body_type=body_type)
+        self._request_callback(path, msg, callback, body_type=body_type, no_response=no_response)
         lock.acquire()
         lock.release()
         return namespace['kv']
@@ -119,6 +127,7 @@ class DR2PPeer(DR2PBase):
                 path = head['Path']
                 rid = head['ID']
                 msg, _ = decode_msg(body, body_type=head['Body_Type'] if 'Body_Type' in head else None)
+                no_response = head['No_Response'] if 'No_Response' in head else False
                 _log('Receive request body {}'.format(msg))
                 _log('Calling handler...')
                 handler = self.handler_dict[path]()
@@ -136,9 +145,11 @@ class DR2PPeer(DR2PBase):
                 body_type = handler.res_head['Body_Type'] if 'Body_Type' in handler.res_head else None
                 res_body, body_type = encode_msg(res, body_type=body_type)
                 handler.res_head['Body_Type'] = body_type
-                _log('Send response head {}'.format(handler.res_head))
-                _log('Send response body {}'.format(res))
-                self.j.send(handler.res_head, res_body)
+                # Respond if No_Response is False or not define.
+                if not no_response:
+                    _log('Send response head {}'.format(handler.res_head))
+                    _log('Send response body {}'.format(res))
+                    self.j.send(handler.res_head, res_body)
             elif head['Type'] == 'response':
                 _log('Receive response head {}'.format(head))
                 msg, _ = decode_msg(body, body_type=head['Body_Type'] if 'Body_Type' in head else None)
