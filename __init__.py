@@ -75,7 +75,7 @@ class DR2PPeer(DR2PBase):
     def set_handler(self, path, handler=None):
         self.handler_dict[path] = Handler if handler is None else handler
 
-    def _request_callback(self, path, msg, callback, body_type=None, no_response=False):  # Callback
+    def _request_callback(self, path, msg, callback, body_type=None, no_response=False, set_headers=None):  # Callback
         rid = str(self.next_rid)
         self.next_rid += 1
         head = {
@@ -96,13 +96,17 @@ class DR2PPeer(DR2PBase):
             head['No_Response'] = True
         else:
             self.callback_dict[rid] = callback
+        # Custom headers
+        if set_headers is not None:
+            for key, value in set_headers:
+                head[key] = value
         _log('Send request head {}'.format(head))
         _log('Send request body {}'.format(msg))
         self.j.send(head, body)
         if no_response:
             callback(msg=None, head=None, body=None)
 
-    def request(self, path, msg, body_type=None, no_response=False):
+    def request(self, path, msg, body_type=None, no_response=False, set_headers=None):
         lock = _thread.allocate_lock()
         lock.acquire()
         namespace = {}
@@ -111,7 +115,10 @@ class DR2PPeer(DR2PBase):
             namespace['kv'] = kv
             lock.release()
 
-        self._request_callback(path, msg, callback, body_type=body_type, no_response=no_response)
+        self._request_callback(path, msg, callback,
+                               body_type=body_type,
+                               no_response=no_response,
+                               set_headers=set_headers)
         lock.acquire()
         lock.release()
         return namespace['kv']
@@ -242,6 +249,9 @@ class Handler:
             'Key': key,
             'Value': value
         })
+
+    def set_header(self, key, value):
+        self.res_head[key] = value
 
     def handle(self, msg):
         pass
