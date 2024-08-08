@@ -115,7 +115,7 @@ class DR2PPeer(DR2PBase):
             self.res_continued_callback[rid] = continued_callback
             callback(msg=None, head=None, body=None)
 
-    def request(self, path, msg, body_type=None, no_response=False, set_headers=None, continued_callback=None):
+    def request(self, path, msg=None, body_type=None, no_response=False, set_headers=None, continued_callback=None):
         lock = _thread.allocate_lock()
         lock.acquire()
         namespace = {}
@@ -254,8 +254,8 @@ class DR2PServer(DR2PBase):
 
 class DR2PClient(DR2PPeer):
 
-    def __init__(self, j=None):
-        DR2PPeer.__init__(self, jhtp.JHTPClient() if j is None else j)
+    def __init__(self, j=None, handler_dict=None):
+        DR2PPeer.__init__(self, jhtp.JHTPClient() if j is None else j, handler_dict=handler_dict)
 
     def connect(self, host, port):
         self.j.connect(host, port)
