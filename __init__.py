@@ -71,11 +71,13 @@ class DR2PPeer(DR2PBase):
         self.client_id = None  # ?
         self.remote_host = None
         self.cookie = {}
+        self.res_continued_callback = {}  # rid -> callback
 
     def set_handler(self, path, handler=None):
         self.handler_dict[path] = Handler if handler is None else handler
 
-    def _request_callback(self, path, msg, callback, body_type=None, no_response=False, set_headers=None):  # Callback
+    def _request_callback(self, path, msg, callback,
+                          body_type=None, no_response=False, set_headers=None, continued_callback=None):  # Callback
         rid = str(self.next_rid)
         self.next_rid += 1
         head = {
@@ -91,9 +93,13 @@ class DR2PPeer(DR2PBase):
         if not self.cookie == {}:
             head['Cookie'] = self.cookie
         # No_Response
-        # Request peer don't respond. Don't register callback.
+        # Request peer doesn't respond, don't register callback.
         if no_response:
             head['No_Response'] = True
+        # Continued
+        # Expect continued response, use continued_callback.
+        elif continued_callback is not None:
+            pass
         else:
             self.callback_dict[rid] = callback
         # Custom headers
@@ -101,24 +107,31 @@ class DR2PPeer(DR2PBase):
             for key, value in set_headers:
                 head[key] = value
         _log('Send request head {}'.format(head))
-        _log('Send request body {}'.format(msg))
+        _log('Send request body {}'.format(msg), 2)
         self.j.send(head, body)
         if no_response:
             callback(msg=None, head=None, body=None)
+        if continued_callback is not None:
+            self.res_continued_callback[rid] = continued_callback
+            callback(msg=None, head=None, body=None)
 
-    def request(self, path, msg, body_type=None, no_response=False, set_headers=None):
+    def request(self, path, msg, body_type=None, no_response=False, set_headers=None, continued_callback=None):
         lock = _thread.allocate_lock()
         lock.acquire()
         namespace = {}
 
         def callback(**kv):
-            namespace['kv'] = kv
+            if 'generator' in kv:  # Continued response.
+                namespace['kv'] = kv['generator']
+            else:
+                namespace['kv'] = kv
             lock.release()
 
         self._request_callback(path, msg, callback,
                                body_type=body_type,
                                no_response=no_response,
-                               set_headers=set_headers)
+                               set_headers=set_headers,
+                               continued_callback=continued_callback)
         lock.acquire()
         lock.release()
         return namespace['kv']
@@ -135,7 +148,7 @@ class DR2PPeer(DR2PBase):
                 rid = head['ID']
                 msg, _ = decode_msg(body, body_type=head['Body_Type'] if 'Body_Type' in head else None)
                 no_response = head['No_Response'] if 'No_Response' in head else False
-                _log('Receive request body {}'.format(msg))
+                _log('Receive request body {}'.format(msg), 2)
                 _log('Calling handler...')
                 handler = self.handler_dict[path]()
                 handler.dr2p_peer = self
@@ -149,28 +162,50 @@ class DR2PPeer(DR2PBase):
                 }
                 res = handler.handle(msg)
                 _log('Handler returned.')
-                body_type = handler.res_head['Body_Type'] if 'Body_Type' in handler.res_head else None
-                res_body, body_type = encode_msg(res, body_type=body_type)
-                handler.res_head['Body_Type'] = body_type
+
+                def send_once(_res, _handler):
+                    body_type = _handler.res_head['Body_Type'] if 'Body_Type' in _handler.res_head else None
+                    res_body, body_type = encode_msg(_res, body_type=body_type)
+                    _handler.res_head['Body_Type'] = body_type
+                    _log('Send response head {}'.format(_handler.res_head))
+                    _log('Send response body {}'.format(_res), 2)
+                    self.j.send(_handler.res_head, res_body)
+
                 # Respond if No_Response is False or not define.
                 if not no_response:
-                    _log('Send response head {}'.format(handler.res_head))
-                    _log('Send response body {}'.format(res))
-                    self.j.send(handler.res_head, res_body)
+                    if hasattr(res, '__call__'):  # Continued response.
+                        while True:
+                            res_value, is_continue = res()
+                            handler.set_header('Continued', is_continue)
+                            send_once(res_value, handler)
+                            if not is_continue:
+                                break
+                    else:  # Normal response.
+                        send_once(res, handler)
             elif head['Type'] == 'response':
                 _log('Receive response head {}'.format(head))
                 msg, _ = decode_msg(body, body_type=head['Body_Type'] if 'Body_Type' in head else None)
-                _log('Receive response body {}'.format(msg))
+                _log('Receive response body {}'.format(msg), 2)
                 rid = head['ID']
                 if 'Set_Cookie' in head:
                     update_cookie(self.cookie, head['Set_Cookie'])
-                callback = self.callback_dict[rid]
-                callback.dr2p_peer = self  # ?
-                callback(
-                    msg=msg,
-                    head=head,
-                    body=body,
-                )
+                if 'Continued' in head:  # Continued response.
+                    is_continue = head['Continued']
+                    if rid in self.res_continued_callback:
+                        continued_callback = self.res_continued_callback[rid]
+                        continued_callback({
+                            'msg': msg,
+                            'head': head,
+                            'body': body,
+                        }, is_continue)
+                else:
+                    callback = self.callback_dict[rid]
+                    callback.dr2p_peer = self  # ?
+                    callback(
+                        msg=msg,
+                        head=head,
+                        body=body,
+                    )
 
         while self._mainloop_continue:
             try:
