@@ -45,6 +45,12 @@ def update_cookie(cookie, set_cookie):
         cookie[co['Key']] = co['Value']
 
 
+class PeerNotConnect(Exception):
+
+    def __init__(self):
+        pass
+
+
 class DR2PBase:
 
     def __init__(self, j=None):
@@ -65,7 +71,7 @@ class DR2PPeer(DR2PBase):
     def __init__(self, j=None, handler_dict=None):
         DR2PBase.__init__(self, jhtp.JHTPPeer() if j is None else j)
         self.handler_dict = {} if handler_dict is None else handler_dict
-        self._mainloop_continue = True
+        self._mainloop_continue = False
         self.next_rid = 1  # Request-response id.
         self.callback_dict = {}  # rid -> callback
         self.client_id = None  # ?
@@ -116,6 +122,8 @@ class DR2PPeer(DR2PBase):
             callback(msg=None, head=None, body=None)
 
     def request(self, path, msg=None, body_type=None, no_response=False, set_headers=None, continued_callback=None):
+        if not self._is_mainloop():
+            raise PeerNotConnect
         lock = _thread.allocate_lock()
         lock.acquire()
         namespace = {}
@@ -136,8 +144,25 @@ class DR2PPeer(DR2PBase):
         lock.release()
         return namespace['kv']
 
-    def start_mainloop(self):
-        _thread.start_new_thread(self.mainloop, ())
+    def start_mainloop(self, reconnect=False):
+        self._mainloop_continue = True
+
+        def _mainloop():
+            while True:
+                self.mainloop()
+                if reconnect:
+                    _log('Try to reconnect...')
+                    self.j.reconnect()
+                else:
+                    break
+
+        _thread.start_new_thread(_mainloop, ())
+
+    def _is_mainloop(self):
+        return self._mainloop_continue
+
+    def is_connected(self):
+        return self._is_mainloop()
 
     def mainloop(self):
 
@@ -207,6 +232,7 @@ class DR2PPeer(DR2PBase):
                         body=body,
                     )
 
+        self._mainloop_continue = True
         while self._mainloop_continue:
             try:
                 _log('Receive start.')
@@ -218,6 +244,7 @@ class DR2PPeer(DR2PBase):
             except KeyboardInterrupt:
                 _log('Keyboard interrupt, stop.')
                 break
+        self._mainloop_continue = False
 
 
 class DR2PServer(DR2PBase):
@@ -257,8 +284,15 @@ class DR2PClient(DR2PPeer):
     def __init__(self, j=None, handler_dict=None):
         DR2PPeer.__init__(self, jhtp.JHTPClient() if j is None else j, handler_dict=handler_dict)
 
-    def connect(self, host, port):
-        self.j.connect(host, port)
+    def connect(self, host, port, reconnect=False):
+        try:
+            self.j.connect(host, port)
+        except jhtp.TlaConnectionRefuse as e:
+            _log('Try to reconnect...')
+            if reconnect:
+                self.j.reconnect()
+            else:
+                raise e
         self.remote_host = host
 
 
