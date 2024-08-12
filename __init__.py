@@ -85,12 +85,17 @@ class DR2PPeer(DR2PBase):
         self.remote_host = None
         self.cookie = {}
         self.res_continued_callback = {}  # rid -> callback
+        self.request_timeout = None
 
     def set_handler(self, path, handler=None):
         self.handler_dict[path] = Handler if handler is None else handler
 
+    def set_request_timeout(self, timeout):
+        self.request_timeout = timeout
+
     def _request_callback(self, path, msg, callback,
                           body_type=None, no_response=False, set_headers=None, continued_callback=None, timeout=None):
+        timeout = timeout if timeout is not None else self.request_timeout
         rid = str(self.next_rid)
         self.next_rid += 1
         head = {
@@ -142,6 +147,7 @@ class DR2PPeer(DR2PBase):
                 body_type=None, no_response=False, set_headers=None, continued_callback=None, timeout=None):
         if not self._is_mainloop():
             raise PeerNotConnect
+        timeout = timeout if timeout is not None else self.request_timeout
         lock = _thread.allocate_lock()
         lock.acquire()
         namespace = {}
