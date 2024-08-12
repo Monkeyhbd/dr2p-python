@@ -1,6 +1,7 @@
 import jhtp
 import json
 import _thread
+import time
 
 
 _LOG_PREFIX = '[DR2P]'
@@ -51,6 +52,12 @@ class PeerNotConnect(Exception):
         pass
 
 
+class RequestTimeout(Exception):
+
+    def __init__(self):
+        pass
+
+
 class DR2PBase:
 
     def __init__(self, j=None):
@@ -83,7 +90,7 @@ class DR2PPeer(DR2PBase):
         self.handler_dict[path] = Handler if handler is None else handler
 
     def _request_callback(self, path, msg, callback,
-                          body_type=None, no_response=False, set_headers=None, continued_callback=None):  # Callback
+                          body_type=None, no_response=False, set_headers=None, continued_callback=None, timeout=None):
         rid = str(self.next_rid)
         self.next_rid += 1
         head = {
@@ -107,7 +114,17 @@ class DR2PPeer(DR2PBase):
         elif continued_callback is not None:
             pass
         else:
-            self.callback_dict[rid] = callback
+            self.callback_dict[rid] = callback  # Register callback.
+            if timeout is not None:
+                def timer(sec):
+                    time.sleep(sec)
+                    try:
+                        self.callback_dict[rid](timeout=True)
+                        self.callback_dict.pop(rid)  # Unregister callback.
+                    except KeyError:
+                        pass
+                _thread.start_new_thread(timer, (timeout, ))
+
         # Custom headers
         if set_headers is not None:
             for key, value in set_headers:
@@ -121,7 +138,8 @@ class DR2PPeer(DR2PBase):
             self.res_continued_callback[rid] = continued_callback
             callback(msg=None, head=None, body=None)
 
-    def request(self, path, msg=None, body_type=None, no_response=False, set_headers=None, continued_callback=None):
+    def request(self, path, msg=None,
+                body_type=None, no_response=False, set_headers=None, continued_callback=None, timeout=None):
         if not self._is_mainloop():
             raise PeerNotConnect
         lock = _thread.allocate_lock()
@@ -129,20 +147,24 @@ class DR2PPeer(DR2PBase):
         namespace = {}
 
         def callback(**kv):
-            if 'generator' in kv:  # Continued response.
-                namespace['kv'] = kv['generator']
-            else:
-                namespace['kv'] = kv
+            namespace['rtn'] = kv
             lock.release()
 
         self._request_callback(path, msg, callback,
                                body_type=body_type,
                                no_response=no_response,
                                set_headers=set_headers,
-                               continued_callback=continued_callback)
+                               continued_callback=continued_callback,
+                               timeout=timeout)
         lock.acquire()
         lock.release()
-        return namespace['kv']
+        rtn = namespace['rtn']
+        if 'generator' in rtn:  # Continued response.
+            return rtn['generator']
+        elif 'timeout' in rtn and rtn['timeout']:  # Request timeout.
+            raise RequestTimeout()
+        else:
+            return rtn
 
     def start_mainloop(self, reconnect=False):
         self._mainloop_continue = True
@@ -224,13 +246,17 @@ class DR2PPeer(DR2PBase):
                             'body': body,
                         }, is_continue)
                 else:
-                    callback = self.callback_dict[rid]
-                    callback.dr2p_peer = self  # ?
-                    callback(
-                        msg=msg,
-                        head=head,
-                        body=body,
-                    )
+                    try:
+                        callback = self.callback_dict[rid]
+                        self.callback_dict.pop(rid)  # Unregister callback.
+                        callback.dr2p_peer = self  # ?
+                        callback(
+                            msg=msg,
+                            head=head,
+                            body=body,
+                        )
+                    except KeyError:
+                        _log('Callback not found, maybe timeout.')
 
         self._mainloop_continue = True
         while self._mainloop_continue:
