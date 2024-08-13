@@ -246,6 +246,8 @@ class DR2PPeer(DR2PBase):
                     is_continue = head['Continued']
                     if rid in self.res_continued_callback:
                         continued_callback = self.res_continued_callback[rid]
+                        if not is_continue:
+                            self.res_continued_callback.pop(rid)
                         continued_callback({
                             'msg': msg,
                             'head': head,
