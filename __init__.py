@@ -2,6 +2,7 @@ import jhtp
 import json
 import _thread
 import time
+import traceback
 
 
 _LOG_PREFIX = '[DR2P]'
@@ -56,6 +57,22 @@ class RequestTimeout(Exception):
 
     def __init__(self):
         pass
+
+
+class StatusCodeError(Exception):
+
+    def __init__(self, kv):
+        self.kv = kv
+
+
+class InternalError(StatusCodeError):
+
+    pass
+
+
+class PathNotFound(StatusCodeError):
+
+    pass
 
 
 class DR2PBase:
@@ -138,10 +155,10 @@ class DR2PPeer(DR2PBase):
         _log('Send request body {}'.format(msg), 2)
         self.j.send(head, body)
         if no_response:
-            callback(msg=None, head=None, body=None)
+            callback(no_response=True)
         if continued_callback is not None:
             self.res_continued_callback[rid] = continued_callback
-            callback(msg=None, head=None, body=None)
+            callback(continued_callback=True)
 
     def request(self, path, msg=None,
                 body_type=None, no_response=False, set_headers=None, continued_callback=None, timeout=None):
@@ -169,8 +186,19 @@ class DR2PPeer(DR2PBase):
             return rtn['generator']
         elif 'timeout' in rtn and rtn['timeout']:  # Request timeout.
             raise RequestTimeout()
+        elif 'no_response' in rtn:
+            return None
+        elif 'continued_callback' in rtn:
+            return None
         else:
-            return rtn
+            if rtn['head']['Code'] == 'OK':
+                return rtn
+            elif rtn['head']['Code'] == 'INTERNAL_ERROR':
+                raise InternalError(rtn)
+            elif rtn['head']['Code'] == 'PATH_NOT_FOUND':
+                raise PathNotFound(rtn)
+            else:
+                raise StatusCodeError(rtn)
 
     def start_mainloop(self, reconnect=False):
         self._mainloop_continue = True
@@ -203,26 +231,43 @@ class DR2PPeer(DR2PBase):
                 no_response = head['No_Response'] if 'No_Response' in head else False
                 _log('Receive request body {}'.format(msg), 2)
                 _log('Calling handler...')
-                handler = self.handler_dict[path]()
-                handler.dr2p_peer = self
-                handler.head = head
-                handler.body = body
-                handler.res_head = {
+
+                def send_once(_msg, _head):
+                    body_type = _head['Body_Type'] if 'Body_Type' in _head else None
+                    res_body, body_type = encode_msg(_msg, body_type=body_type)
+                    _head['Body_Type'] = body_type
+                    _log('Send response head {}'.format(_head))
+                    _log('Send response body {}'.format(_msg), 2)
+                    self.j.send(_head, res_body)
+
+                res_head = {
                     'Type': 'response',
                     'Code': 'OK',
                     'ID': rid,
                     'Version': '0'
                 }
-                res = handler.handle(msg)
-                _log('Handler returned.')
 
-                def send_once(_res, _handler):
-                    body_type = _handler.res_head['Body_Type'] if 'Body_Type' in _handler.res_head else None
-                    res_body, body_type = encode_msg(_res, body_type=body_type)
-                    _handler.res_head['Body_Type'] = body_type
-                    _log('Send response head {}'.format(_handler.res_head))
-                    _log('Send response body {}'.format(_res), 2)
-                    self.j.send(_handler.res_head, res_body)
+                try:
+                    handler = self.handler_dict[path]()
+                except KeyError:
+                    if not no_response:
+                        res_head['Code'] = 'PATH_NOT_FOUND'
+                        send_once(None, res_head)
+                    return None
+
+                handler.dr2p_peer = self
+                handler.head = head
+                handler.body = body
+                handler.res_head = res_head
+                try:
+                    res = handler.handle(msg)
+                    _log('Handler returned.')
+                except Exception as e:  # Error occur during handle.
+                    traceback.print_exception(e)
+                    if not no_response:
+                        res_head['Code'] = 'INTERNAL_ERROR'
+                        send_once(None, res_head)
+                    return None
 
                 # Respond if No_Response is False or not define.
                 if not no_response:
@@ -230,11 +275,11 @@ class DR2PPeer(DR2PBase):
                         while True:
                             res_value, is_continue = res()
                             handler.set_header('Continued', is_continue)
-                            send_once(res_value, handler)
+                            send_once(res_value, handler.res_head)
                             if not is_continue:
                                 break
                     else:  # Normal response.
-                        send_once(res, handler)
+                        send_once(res, handler.res_head)
             elif head['Type'] == 'response':
                 _log('Receive response head {}'.format(head))
                 msg, _ = decode_msg(body, body_type=head['Body_Type'] if 'Body_Type' in head else None)
